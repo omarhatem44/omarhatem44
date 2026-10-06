@@ -36,7 +36,7 @@ LOGOS = [                                   # (Devicon name, label, variant, var
     ("fastapi", "FastAPI", "original", None),
     ("apacheairflow", "Airflow", "original", None),
 ]
-LOGO_SECONDS = 1                          # how long each logo stays on screen
+LOGO_SECONDS = 1.5                         # how long each logo stays on screen
 OUT_DIR = "assets"
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -53,7 +53,7 @@ THEMES = {
     },
 }
 
-W, H, PAD = 880, 670, 15
+W, H, PAD = 880, 670, 5
 MONO = ('ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,'
         '"Liberation Mono","DejaVu Sans Mono",monospace')
 EM = 0.6                                    # monospace advance / font size
