@@ -1,0 +1,44 @@
+name: Profile terminal
+
+on:
+  schedule:
+    - cron: "30 8,20 * * *"        # twice a day (UTC)
+  workflow_dispatch:                # "Run workflow" button
+  push:
+    branches: [main]
+    paths:
+      - "scripts/**"
+      - ".github/workflows/profile-terminal.yml"
+      - "assets/avatar.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: profile-terminal
+  cancel-in-progress: true
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - run: pip install --quiet pillow numpy
+
+      - name: Render card
+        run: python scripts/generate_terminal.py
+        env:
+          GH_USER: ${{ github.repository_owner }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/terminal-dark.svg assets/terminal-light.svg
+          git diff --cached --quiet || { git commit -m "chore: refresh profile terminal"; git push; }
