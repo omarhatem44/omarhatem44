@@ -36,7 +36,7 @@ LOGOS = [                                   # (Devicon name, label, variant, var
     ("fastapi", "FastAPI", "original", None),
     ("apacheairflow", "Airflow", "original", None),
 ]
-LOGO_SECONDS = 2.6                          # how long each logo stays on screen
+LOGO_SECONDS = 1.3                          # how long each logo stays on screen
 OUT_DIR = "assets"
 # ────────────────────────────────────────────────────────────────────────────
 
