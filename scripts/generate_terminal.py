@@ -49,12 +49,12 @@ THEMES = {
     },
 }
 
-W, H, PAD = 880, 692, 24
+W, H, PAD = 880, 670, 24
 MONO = ('ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,'
         '"Liberation Mono","DejaVu Sans Mono",monospace')
 EM = 0.6                                    # monospace advance / font size
 CELL, GAP = 12, 3                           # heatmap squares
-PANEL_Y, PANEL_H, PANEL_W = 300, 370, 408
+PANEL_Y, PANEL_H, PANEL_W = 278, 370, 408
 ART_W, ART_H, PITCH = 280, 320, 2.5         # portrait box (px) and dot spacing
 TYPE_S = 0.045                              # seconds per typed character
 MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
@@ -334,15 +334,6 @@ def heatmap(days, total, top, t0):
     return "".join(out)
 
 
-def panel(x, title, note, t):
-    y = PANEL_Y
-    return (f'<g class="o" style="animation-delay:{t:.2f}s">'
-            f'<rect x="{x + .5}" y="{y + .5}" width="{PANEL_W - 1}" height="{PANEL_H - 1}" '
-            f'rx="8" class="pnl"/><line x1="{x + .5}" y1="{y + 30.5}" x2="{x + PANEL_W - .5}" '
-            f'y2="{y + 30.5}" class="sep"/>{txt(x + 14, y + 20, title, "ph")}'
-            f'{txt(x + PANEL_W - 14, y + 20, note, "ph", anchor="end")}</g>')
-
-
 def dots(layers, ox, oy, t0, bands=16):
     gh = layers["line"].shape[0]
     step = -(-gh // bands)
@@ -362,7 +353,7 @@ def dots(layers, ox, oy, t0, bands=16):
 
 def whoami(st, art, t0):
     lx, rx = PAD, W - PAD - PANEL_W
-    out = [panel(lx, "portrait", f"@{USER}", t0), panel(rx, "activity", st["range"], t0)]
+    out = []
     if art:
         out.append(dots(art, lx + (PANEL_W - ART_W) / 2, PANEL_Y + 42, t0 + 0.1))
     else:
@@ -398,7 +389,7 @@ def style(T, keyframes):
     return "\n".join([
         f"text{{font-family:{MONO};font-size:14px;fill:{T['text']}}}",
         f".win{{fill:{T['bg']};stroke:{T['line']}}}", f".bar{{fill:{T['bar']}}}",
-        f".sep{{stroke:{T['line']}}}", f".pnl{{fill:{T['bg']};stroke:{T['line']}}}",
+        f".sep{{stroke:{T['line']}}}",
         f".ttl{{font-size:12px;fill:{T['muted']}}}",
         f".pu{{fill:{T['green']};font-weight:700}}", f".pp{{fill:{T['blue']};font-weight:700}}",
         f".pd{{fill:{T['muted']}}}", ".pc{font-weight:600}", f".bgf{{fill:{T['bg']}}}",
@@ -425,7 +416,7 @@ def render(days, total, st, art, theme):
     heat = heatmap(days, total, 106, 1.3) if days else ""
     p2, k2 = prompt(280, "whoami", "type2", 2.35, 2.15)
     me = whoami(st, art, 2.75)
-    desc = (f"{PROMPT}: {total:,} contributions in the last year. "
+    desc = (f"{PROMPT}: {total:,} contributions ({st['range']}). "
             + ", ".join(f"{label} {value} {unit}".strip() for label, value, unit, _ in st["items"][:2]))
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" '
