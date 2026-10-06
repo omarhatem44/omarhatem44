@@ -2,35 +2,41 @@
 """Terminal-style GitHub profile card -> assets/terminal-dark.svg + assets/terminal-light.svg
 
     omar@github ~ $ ./contributions.sh    contribution heatmap
-    omar@github ~ $ whoami                 dot-matrix portrait + activity stats
+    omar@github ~ $ whoami                 rotating tech logos + activity stats
 
-Data:     GraphQL API when GH_TOKEN is set (the Actions GITHUB_TOKEN is enough),
-          otherwise your public contributions page.
-Portrait: $AVATAR, assets/avatar.png or assets/avatar.jpg if present, else your GitHub avatar.
+Data:  GraphQL API when GH_TOKEN is set (the Actions GITHUB_TOKEN is enough),
+       otherwise your public contributions page.
+Logos: official icons from Devicon (https://devicon.dev), downloaded at build time.
+       A file at assets/logos/<name>.svg is used instead, for anything Devicon lacks.
 
-Local run:
-    pip install pillow numpy
+Local run (standard library only):
     GH_USER=omarhatem44 python scripts/generate_terminal.py
 """
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import html
-import io
 import json
 import os
 import re
 import urllib.request
-from collections import deque
-
-import numpy as np
-from PIL import Image, ImageFilter
 
 # ── edit me ─────────────────────────────────────────────────────────────────
 USER = os.getenv("GH_USER", "omarhatem44")
 TOKEN = os.getenv("GH_TOKEN", "")
 PROMPT = "omar@github"                      # shown as:  omar@github ~ $
-AVATAR_FILES = (os.getenv("AVATAR", ""), "assets/avatar.png", "assets/avatar.jpg")
+LOGOS = [                                   # (Devicon name, label, variant, variant on dark)
+    ("python", "Python", "original", None),
+    ("amazonwebservices", "AWS", "original-wordmark", "plain-wordmark"),
+    ("docker", "Docker", "original", None),
+    ("pytorch", "PyTorch", "original", None),
+    ("kubernetes", "Kubernetes", "original", None),
+    ("tensorflow", "TensorFlow", "original", None),
+    ("fastapi", "FastAPI", "original", None),
+    ("apacheairflow", "Airflow", "original", None),
+]
+LOGO_SECONDS = 2.6                          # how long each logo stays on screen
 OUT_DIR = "assets"
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -39,13 +45,11 @@ THEMES = {
         "bg": "#0d1117", "bar": "#151b23", "line": "#3d444d", "text": "#f0f6fc",
         "muted": "#9198a1", "faint": "#656c76", "green": "#3fb950", "blue": "#4493f8",
         "heat": ["#151b23", "#033a16", "#196c2e", "#2ea043", "#56d364"],
-        "dots": ["#3d444d", "#9198a1", "#e6edf3"],          # shade, line, strong line
     },
     "light": {
         "bg": "#ffffff", "bar": "#f6f8fa", "line": "#d1d9e0", "text": "#1f2328",
         "muted": "#59636e", "faint": "#818b98", "green": "#1a7f37", "blue": "#0969da",
         "heat": ["#eff2f5", "#aceebb", "#4ac26b", "#2da44e", "#116329"],
-        "dots": ["#d1d9e0", "#818b98", "#1f2328"],
     },
 }
 
@@ -55,7 +59,8 @@ MONO = ('ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,'
 EM = 0.6                                    # monospace advance / font size
 CELL, GAP = 12, 3                           # heatmap squares
 PANEL_Y, PANEL_H, PANEL_W = 278, 370, 408
-ART_W, ART_H, PITCH = 280, 320, 2.5         # portrait box (px) and dot spacing
+LOGO_SIZE = 176                             # logo box (px)
+DEVICON = "https://raw.githubusercontent.com/devicons/devicon/v2.17.0/icons"
 TYPE_S = 0.045                              # seconds per typed character
 MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
 LEVEL = {"NONE": 0, "FIRST_QUARTILE": 1, "SECOND_QUARTILE": 2,
@@ -73,7 +78,6 @@ def get(url, data=None, headers=None):
 QUERY = """
 query($login: String!) {
   user(login: $login) {
-    avatarUrl
     contributionsCollection {
       contributionCalendar {
         totalContributions
@@ -94,8 +98,7 @@ def from_graphql():
     cal = user["contributionsCollection"]["contributionCalendar"]
     days = [(d["date"], d["contributionCount"], LEVEL[d["contributionLevel"]])
             for w in cal["weeks"] for d in w["contributionDays"]]
-    url = user["avatarUrl"]
-    return days, cal["totalContributions"], url + ("&" if "?" in url else "?") + "s=480"
+    return days, cal["totalContributions"]
 
 
 def calendar_from_html(page):
@@ -113,9 +116,7 @@ def calendar_from_html(page):
 
 
 def from_public():
-    days, total = calendar_from_html(
-        get(f"https://github.com/users/{USER}/contributions").decode())
-    return days, total, f"https://github.com/{USER}.png?size=480"
+    return calendar_from_html(get(f"https://github.com/users/{USER}/contributions").decode())
 
 
 # ── stats ───────────────────────────────────────────────────────────────────
@@ -170,109 +171,66 @@ def stats(days, total):
     }
 
 
-# ── dot-matrix portrait ─────────────────────────────────────────────────────
-def load_avatar(url):
-    for path in AVATAR_FILES:
-        if path and os.path.exists(path):
-            return Image.open(path)
-    return Image.open(io.BytesIO(get(url)))
+# ── logos ───────────────────────────────────────────────────────────────────
+def logo_source(name, variant):
+    local = os.path.join(OUT_DIR, "logos", f"{name}.svg")
+    if os.path.exists(local):
+        with open(local, encoding="utf-8") as f:
+            return f.read()
+    return get(f"{DEVICON}/{name}/{name}-{variant}.svg").decode("utf-8")
 
 
-def person_mask(rgb):
-    """Flood-fill a plain background in from the borders -> (mask, found)."""
-    h, w, _ = rgb.shape
-    rim = np.concatenate([rgb[0], rgb[-1], rgb[:, 0], rgb[:, -1]])
-    near = np.linalg.norm(rgb - np.median(rim, axis=0), axis=2) < 0.16
-    bg = np.zeros((h, w), bool)
-    q = deque()
-    for y in range(h):
-        for x in ((0, w - 1) if 0 < y < h - 1 else range(w)):
-            if near[y, x] and not bg[y, x]:
-                bg[y, x] = True
-                q.append((y, x))
-    while q:
-        y, x = q.popleft()
-        for ny, nx in ((y + 1, x), (y - 1, x), (y, x + 1), (y, x - 1)):
-            if 0 <= ny < h and 0 <= nx < w and near[ny, nx] and not bg[ny, nx]:
-                bg[ny, nx] = True
-                q.append((ny, nx))
-    if 0.08 < bg.mean() < 0.8:
-        fg = Image.fromarray((~bg).astype(np.uint8) * 255)
-        fg = fg.filter(ImageFilter.MinFilter(3)).filter(ImageFilter.MaxFilter(3))
-        return np.asarray(fg) > 127, True
-    yy, xx = np.mgrid[:h, :w]
-    return (yy - h / 2) ** 2 + (xx - w / 2) ** 2 < (0.48 * min(h, w)) ** 2, False
+KEEP = {"fill", "fill-rule", "clip-rule", "stroke", "stroke-width", "stroke-linecap",
+        "stroke-linejoin", "stroke-miterlimit", "style", "preserveAspectRatio"}
 
 
-def frame(fg, found, scale, size):
-    """Crop box (in image px) that puts head and shoulders in the portrait box."""
-    aspect = ART_W / ART_H
-    if found:
-        ys, _ = np.nonzero(fg)
-        top, bottom = ys.min(), ys.max()
-        head = fg[top: top + max(1, int(0.3 * (bottom - top + 1)))]
-        hx = np.nonzero(head.any(0))[0]
-        w = min((hx[-1] + 1 - hx[0]) * 2.1, fg.shape[1])
-        cx, y0 = (hx[0] + hx[-1] + 1) / 2, top - 0.05 * w / aspect
-        return tuple(round(v / scale) for v in (cx - w / 2, y0, cx + w / 2, y0 + w / aspect))
-    iw, ih = size
-    if iw / ih > aspect:
-        nw = ih * aspect
-        return (round((iw - nw) / 2), 0, round((iw + nw) / 2), ih)
-    return (0, 0, iw, round(iw / aspect))
+def embed(svg, x, y, size, uid):
+    """Place an icon SVG in a size x size box, keeping its ids unique."""
+    svg = re.sub(r"<\?xml.*?\?>|<!DOCTYPE[^>]*>|<!--.*?-->", "", svg, flags=re.S)
+    root = re.search(r"<svg\b[^>]*>", svg)
+    if root is None or "<style" in svg:          # isolate anything with its own CSS
+        data = base64.b64encode(svg.encode()).decode()
+        return (f'<image x="{x:g}" y="{y:g}" width="{size}" height="{size}" '
+                f'href="data:image/svg+xml;base64,{data}"/>')
+    attrs = dict(re.findall(r'([\w:-]+)="([^"]*)"', root.group(0)))
+    view = attrs.get("viewBox") or f'0 0 {attrs.get("width", "128").rstrip("px")} ' \
+                                   f'{attrs.get("height", "128").rstrip("px")}'
+    keep = "".join(f' {k}="{v}"' for k, v in attrs.items() if k in KEEP)
+    inner = svg[root.end():svg.rfind("</svg>")]
+    for i in set(re.findall(r'\bid="([^"]+)"', inner)):
+        inner = re.sub(r'(\bid="|url\(#|href="#)' + re.escape(i) + r'(?=["\)])',
+                       lambda m, i=i: f"{m.group(1)}{uid}-{i}", inner)
+    return (f'<svg x="{x:g}" y="{y:g}" width="{size}" height="{size}" viewBox="{view}"'
+            f'{keep}>{inner}</svg>')
 
 
-def sobel(a):
-    p = np.pad(a, 1, mode="edge")
-    gx = (p[:-2, 2:] + 2 * p[1:-1, 2:] + p[2:, 2:]) - (p[:-2, :-2] + 2 * p[1:-1, :-2] + p[2:, :-2])
-    gy = (p[2:, :-2] + 2 * p[2:, 1:-1] + p[2:, 2:]) - (p[:-2, :-2] + 2 * p[:-2, 1:-1] + p[:-2, 2:])
-    return np.hypot(gx, gy)
-
-
-def dither(v):
-    """Floyd-Steinberg -> boolean dots."""
-    e, (h, w) = v.copy(), v.shape
-    on = np.zeros((h, w), bool)
-    for y in range(h):
-        for x in range(w):
-            on[y, x] = e[y, x] >= 0.5
-            err = e[y, x] - on[y, x]
-            if x + 1 < w:
-                e[y, x + 1] += err * 7 / 16
-            if y + 1 < h:
-                e[y + 1, max(x - 1, 0)] += err * 3 / 16
-                e[y + 1, x] += err * 5 / 16
-                if x + 1 < w:
-                    e[y + 1, x + 1] += err / 16
-    return on
-
-
-def portrait(img):
-    """Line drawing of the avatar on a dot grid -> {"shade", "line", "strong"}."""
-    gw, gh, k = int(ART_W / PITCH), int(ART_H / PITCH), 4
-    img = img.convert("RGB")
-    scale = 192 / max(img.size)
-    small = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))),
-                       Image.LANCZOS)
-    fg, found = person_mask(np.asarray(small, np.float32) / 255)
-    mask = Image.fromarray(fg.astype(np.uint8) * 255).resize(img.size, Image.BILINEAR)
-    box = frame(fg, found, scale, img.size)
-    img = img.crop(box).resize((gw * k, gh * k), Image.LANCZOS)
-    fgk = np.asarray(mask.crop(box).resize((gw * k, gh * k), Image.BILINEAR)) > 127
-    if not fgk.any():
-        fgk[:] = True
-    lum = np.asarray(img.convert("L").filter(ImageFilter.GaussianBlur(0.8)), np.float32) / 255
-    lo, hi = np.percentile(lum[fgk], [2, 98])
-    lum = np.clip((lum - lo) / max(hi - lo, 1e-3), 0, 1)
-    edge = sobel(lum)
-    edge = np.clip(edge / (np.percentile(edge[fgk], 96) + 1e-6), 0, 1) * fgk
-    pool = lambda a: a.reshape(gh, k, gw, k).mean((1, 3))
-    edge, dark, fg = pool(edge), pool(1 - lum), pool(fgk.astype(np.float32)) > 0.5
-    inner = np.asarray(Image.fromarray(fg.astype(np.uint8) * 255).filter(ImageFilter.MinFilter(3))) > 127
-    line = fg & ((edge > 0.33) | ~inner)                  # edges + silhouette
-    strong = line & (edge > 0.6)
-    shade = dither(np.clip(dark, 0, 1) ** 1.6 * 0.4) & fg & ~line
-    return {"shade": shade, "line": line & ~strong, "strong": strong}
+def carousel(logos, cx, cy, t0):
+    """One logo at a time, forever: rise in, hold, rise out; dots track the position."""
+    n, T, fade, size = len(logos), LOGO_SECONDS, 0.45, LOGO_SIZE
+    cycle = n * T
+    a, b, c = (100 * v / cycle for v in (fade, T - fade, T))
+    keyframes = "" if n < 2 else (
+        f"@keyframes cyc{{0%{{opacity:0;transform:translateY(12px)}}"
+        f"{a:.2f}%,{b:.2f}%{{opacity:1;transform:none}}"
+        f"{c:.2f}%,100%{{opacity:0;transform:translateY(-12px)}}}}"
+        f"@keyframes cyd{{0%{{opacity:0}}{a:.2f}%,{b:.2f}%{{opacity:1}}{c:.2f}%,100%{{opacity:0}}}}"
+        f".lg{{animation:cyc {cycle:.2f}s ease-in-out infinite both}}"
+        f".dn{{animation:cyd {cycle:.2f}s ease-in-out infinite both}}")
+    out = []
+    for i, (label, svg) in enumerate(logos):
+        first = " lg0" if i == 0 else ""
+        out.append(f'<g class="lg{first}" style="animation-delay:{t0 + i * T:.2f}s">'
+                   f'{embed(svg, cx - size / 2, cy - size / 2, size, f"l{i}")}'
+                   f'{txt(cx, cy + size / 2 + 38, label, "lgl", anchor="middle")}</g>')
+    if n > 1:
+        gap, dy = 14, cy + size / 2 + 64
+        for i in range(n):
+            x = cx - (n - 1) * gap / 2 + i * gap
+            first = " dn0" if i == 0 else ""
+            out.append(f'<circle cx="{x:g}" cy="{dy:g}" r="3" class="dt"/>'
+                       f'<circle cx="{x:g}" cy="{dy:g}" r="3" class="dn{first}" '
+                       f'style="animation-delay:{t0 + i * T:.2f}s"/>')
+    return "".join(out), keyframes
 
 
 # ── svg ─────────────────────────────────────────────────────────────────────
@@ -334,30 +292,14 @@ def heatmap(days, total, top, t0):
     return "".join(out)
 
 
-def dots(layers, ox, oy, t0, bands=16):
-    gh = layers["line"].shape[0]
-    step = -(-gh // bands)
-    out = []
-    for b in range(0, gh, step):
-        paths = []
-        for name, cls in (("shade", "ds"), ("line", "dl"), ("strong", "dk")):
-            ys, xs = np.nonzero(layers[name][b:b + step])
-            d = "".join(f"M{ox + (x + .5) * PITCH:g} {oy + (y + b + .5) * PITCH:g}h.01"
-                        for y, x in zip(ys, xs))
-            if d:
-                paths.append(f'<path d="{d}" class="{cls}"/>')
-        out.append(f'<g class="o" style="animation-delay:{t0 + b / step * 0.035:.2f}s">'
-                   f'{"".join(paths)}</g>')
-    return f'<g class="art">{"".join(out)}</g>'
-
-
-def whoami(st, art, t0):
+def whoami(st, logos, t0):
     lx, rx = PAD, W - PAD - PANEL_W
-    out = []
-    if art:
-        out.append(dots(art, lx + (PANEL_W - ART_W) / 2, PANEL_Y + 42, t0 + 0.1))
+    keyframes = ""
+    if logos:
+        reel, keyframes = carousel(logos, lx + PANEL_W / 2, PANEL_Y + 168, t0 + 0.1)
+        out = [f'<g class="o" style="animation-delay:{t0:.2f}s">{reel}</g>']
     else:
-        out.append(txt(lx + PANEL_W / 2, PANEL_Y + 200, "avatar unavailable", "ph", anchor="middle"))
+        out = [txt(lx + PANEL_W / 2, PANEL_Y + 200, "logos unavailable", "ph", anchor="middle")]
     col_w, y0 = (PANEL_W - 28) / 2, PANEL_Y + 48
     for i, (label, value, unit, sub) in enumerate(st["items"]):
         x, y = rx + 18 + (i % 2) * col_w, y0 + (i // 2) * 66
@@ -381,11 +323,11 @@ def whoami(st, art, t0):
             bars.append(txt(bx + bw / 2, base - h - 5, f"{v:,}", "pk", anchor="middle"))
         bars.append(txt(bx + bw / 2, base + 15, MONTHS[int(ym[5:]) - 1], "ml", anchor="middle"))
     out.append(f'<g class="o" style="animation-delay:{t0 + 0.5:.2f}s">{"".join(bars)}</g>')
-    return "".join(out)
+    return "".join(out), keyframes
 
 
 def style(T, keyframes):
-    d, h = T["dots"], T["heat"]
+    h = T["heat"]
     return "\n".join([
         f"text{{font-family:{MONO};font-size:14px;fill:{T['text']}}}",
         f".win{{fill:{T['bg']};stroke:{T['line']}}}", f".bar{{fill:{T['bar']}}}",
@@ -400,8 +342,9 @@ def style(T, keyframes):
         ".num{font-size:22px;font-weight:700}", f".acc{{fill:{T['green']}}}",
         f".unit{{font-size:12px;fill:{T['muted']}}}", f".ss{{font-size:10.5px;fill:{T['faint']}}}",
         f".pk{{font-size:10px;fill:{T['text']}}}", f".ml{{font-size:9.5px;fill:{T['faint']}}}",
-        ".art path{fill:none;stroke-width:1.5;stroke-linecap:round}",
-        f".ds{{stroke:{d[0]}}}", f".dl{{stroke:{d[1]}}}", f".dk{{stroke:{d[2]}}}",
+        ".lg,.dn{opacity:0}", ".lg0,.dn0{opacity:1}",          # still frame: first logo
+        f".lgl{{font-size:15px;font-weight:600;fill:{T['text']}}}",
+        f".dt{{fill:{T['line']}}}", f".dn{{fill:{T['green']}}}",
         ".o{animation:fade .35s ease-out both}",
         "@keyframes fade{from{opacity:0}to{opacity:1}}",
         "@keyframes hide{from{opacity:1}to{opacity:0}}",
@@ -410,18 +353,19 @@ def style(T, keyframes):
     ])
 
 
-def render(days, total, st, art, theme):
+def render(days, total, st, logos, theme):
     T = THEMES[theme]
     p1, k1 = prompt(70, "./contributions.sh", "type1", 0.35)
     heat = heatmap(days, total, 106, 1.3) if days else ""
     p2, k2 = prompt(280, "whoami", "type2", 2.35, 2.15)
-    me = whoami(st, art, 2.75)
+    me, k3 = whoami(st, logos, 2.75)
     desc = (f"{PROMPT}: {total:,} contributions ({st['range']}). "
-            + ", ".join(f"{label} {value} {unit}".strip() for label, value, unit, _ in st["items"][:2]))
+            + ", ".join(f"{label} {value} {unit}".strip() for label, value, unit, _ in st["items"][:2])
+            + ". Stack: " + ", ".join(label for label, _ in logos) + ".")
     return (
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" '
+        f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="{W}" height="{H}" viewBox="0 0 {W} {H}" '
         f'role="img" aria-labelledby="t d">\n<title id="t">{esc(PROMPT)} ~ $ whoami</title>'
-        f'<desc id="d">{esc(desc)}</desc>\n<style>\n{style(T, k1 + k2)}\n</style>\n'
+        f'<desc id="d">{esc(desc)}</desc>\n<style>\n{style(T, k1 + k2 + k3)}\n</style>\n'
         f'<rect x=".5" y=".5" width="{W - 1}" height="{H - 1}" rx="10" class="win"/>'
         f'<path d="M.5 36.5V10.5A10 10 0 0 1 10.5 .5H{W - 10.5}A10 10 0 0 1 {W - .5} 10.5V36.5Z" '
         f'class="bar"/><line x1=".5" y1="36.5" x2="{W - .5}" y2="36.5" class="sep"/>'
@@ -431,6 +375,21 @@ def render(days, total, st, art, theme):
         f"{p1}\n{heat}\n{p2}\n{me}\n</svg>\n")
 
 
+def load_logos(theme, cache):
+    out = []
+    for name, label, variant, dark_variant in LOGOS:
+        key = (name, dark_variant if theme == "dark" and dark_variant else variant)
+        if key not in cache:
+            try:
+                cache[key] = logo_source(*key)
+            except Exception as e:                       # noqa: BLE001
+                print(f"logo {key[0]}-{key[1]} skipped ({e})")
+                cache[key] = None
+        if cache[key]:
+            out.append((label, cache[key]))
+    return out
+
+
 def main():
     data = None
     if TOKEN:
@@ -438,18 +397,15 @@ def main():
             data = from_graphql()
         except Exception as e:                           # noqa: BLE001
             print(f"GraphQL failed ({e}); using the public contributions page")
-    days, total, avatar_url = data or from_public()
+    days, total = data or from_public()
     st = stats(days, total)
-    try:
-        art = portrait(load_avatar(avatar_url))
-    except Exception as e:                               # noqa: BLE001
-        print(f"portrait skipped ({e})")
-        art = None
+    cache = {}
     os.makedirs(OUT_DIR, exist_ok=True)
     for theme in THEMES:
+        logos = load_logos(theme, cache)
         with open(os.path.join(OUT_DIR, f"terminal-{theme}.svg"), "w", encoding="utf-8") as f:
-            f.write(render(days, total, st, art, theme))
-    print(f"ok: {total} contributions, {len(days)} days, "
+            f.write(render(days, total, st, logos, theme))
+    print(f"ok: {total} contributions, {len(days)} days, {len(logos)} logos, "
           f"current streak {st['items'][0][1]}, longest {st['items'][1][1]}")
 
 
